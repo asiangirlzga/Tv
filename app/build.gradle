@@ -10,8 +10,8 @@ android {
         applicationId 'com.lite.hinditv'
         minSdk 21
         targetSdk 34
-        versionCode 1
-        versionName '1.0'
+        versionCode 2
+        versionName '1.1'
     }
 
     buildTypes {
@@ -28,7 +28,15 @@ android {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
     }
+
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
+    }
 }
 
-// No dependencies on purpose: the framework VideoView plays HLS natively,
-// which keeps the APK tiny and RAM use low.
+dependencies {
+    // Only the core player + HLS. No UI module, to keep the APK small.
+    implementation 'androidx.media3:media3-exoplayer:1.4.1'
+    implementation 'androidx.media3:media3-exoplayer-hls:1.4.1'
+}

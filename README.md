@@ -3,16 +3,21 @@
 Plays the iptv-org Hindi playlist (`https://iptv-org.github.io/iptv/languages/hin.m3u`).
 
 ## Why it is light
-- Zero dependencies (no AndroidX, no ExoPlayer). Uses the built-in `VideoView`, which plays HLS natively.
-- No images or XML layouts; UI is built in code. The channel list is plain text.
+- Only two small libraries: ExoPlayer core + HLS (no UI module). Handles live streams, buffering and reconnects.
+- No images or XML layouts; UI is built in code. Buffer is capped (~8 MB) and video capped at 480p.
 - Playlist is downloaded on launch and cached (~100 KB). It falls back to the cache when offline.
 - Decoder is released whenever the app leaves the screen.
-- Release build is minified and resource-shrunk. Expect an APK of well under 100 KB.
+- Release build is minified and resource-shrunk. Expect an APK of roughly 1-2 MB.
+
+## Layout
+Video on top. The playing channel and the channel list are always shown at the bottom.
 
 ## Remote control
-- OK / Menu: show channel list
-- Up / Down (list hidden) or CH+ / CH-: previous / next channel
-- Back: hide list, or exit when already hidden
+- Up / Down: move through the channel list
+- OK: play the highlighted channel
+- CH+ / CH-: previous / next channel directly
+- Menu: hide / show the bottom panel (full-screen video)
+- Back: exit
 
 ## Build
 1. Install Android Studio (or JDK 17 + Android SDK 34).
