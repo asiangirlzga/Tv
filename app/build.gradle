@@ -2,6 +2,11 @@ plugins {
     id 'com.android.application'
 }
 
+// CI passes these in. Locally they fall back to defaults.
+def appVersionCode = (System.getenv('VERSION_CODE') ?: '2').toInteger()
+def appVersionName = System.getenv('VERSION_NAME') ?: '1.1'
+def keystorePath   = System.getenv('KEYSTORE_FILE')
+
 android {
     namespace 'com.lite.hinditv'
     compileSdk 34
@@ -10,8 +15,19 @@ android {
         applicationId 'com.lite.hinditv'
         minSdk 21
         targetSdk 34
-        versionCode 2
-        versionName '1.1'
+        versionCode appVersionCode
+        versionName appVersionName
+    }
+
+    signingConfigs {
+        release {
+            if (keystorePath) {
+                storeFile file(keystorePath)
+                storePassword System.getenv('KEYSTORE_PASSWORD')
+                keyAlias System.getenv('KEY_ALIAS')
+                keyPassword System.getenv('KEY_PASSWORD')
+            }
+        }
     }
 
     buildTypes {
@@ -19,8 +35,8 @@ android {
             minifyEnabled true
             shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt')
-            // Debug-signed so the release APK can be sideloaded directly.
-            signingConfig signingConfigs.debug
+            // Real key when provided (needed for updates), otherwise the debug key.
+            signingConfig keystorePath ? signingConfigs.release : signingConfigs.debug
         }
     }
 

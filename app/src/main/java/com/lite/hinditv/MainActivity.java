@@ -3,6 +3,7 @@ package com.lite.hinditv;
 import android.app.Activity;
 import android.graphics.Color;
 import android.graphics.drawable.ColorDrawable;
+import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -45,15 +46,17 @@ import java.util.Map;
 /**
  * Minimal Android TV player for the iptv-org Hindi playlist.
  *
- * Layout: video on top, "now playing" bar and channel list always visible at the bottom.
- * Video quality is capped at 480p to save bandwidth, RAM and decoder load.
+ * Video is always full screen. The channel bar (now playing + channel list) is a
+ * transparent overlay at the bottom that auto-hides after a few seconds and comes
+ * back on any remote key. Video quality is capped at 480p.
  *
  * Remote keys:
- *   Up / Down        -> move through the channel list
- *   OK / Enter       -> play the highlighted channel
- *   CH+ / CH-        -> previous / next channel directly
- *   Menu             -> hide / show the bottom panel (full-screen video)
- *   Back             -> exit
+ *   Any of Up / Down / OK / Menu (bar hidden) -> show the channel bar
+ *   Up / Down (bar visible)                   -> move through the channel list
+ *   OK / Enter (bar visible)                  -> play the highlighted channel
+ *   CH+ / CH-                                 -> previous / next channel directly
+ *   Menu (bar visible)                        -> hide the bar now
+ *   Back                                      -> hide the bar, or exit if it is already hidden
  */
 public class MainActivity extends Activity {
 
@@ -69,7 +72,8 @@ public class MainActivity extends Activity {
     private static final int MAX_H = 480;
 
     private static final int MAX_RETRIES = 4;
-    private static final long STUCK_MS = 15000;   // buffering this long = treat as stuck
+    private static final long STUCK_MS = 15000;     // buffering this long = treat as stuck
+    private static final long AUTO_HIDE_MS = 5000;  // channel bar hides after this much idle time
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final ArrayList<String> names = new ArrayList<>();
@@ -77,7 +81,7 @@ public class MainActivity extends Activity {
     private final ArrayList<String> referrers = new ArrayList<>();
     private final ArrayList<String> agents = new ArrayList<>();
 
-    private FrameLayout videoFrame;
+    private FrameLayout root;
     private SurfaceView surface;
     private LinearLayout panel;
     private TextView nowPlaying;
@@ -88,12 +92,20 @@ public class MainActivity extends Activity {
     private VideoSize lastSize;
     private int current = -1;
     private boolean playing = false;
+    private boolean panelShown = true;
     private int retries = 0;
 
     private final Runnable stuckCheck = new Runnable() {
         @Override
         public void run() {
             retry("Stream stalled");
+        }
+    };
+
+    private final Runnable autoHide = new Runnable() {
+        @Override
+        public void run() {
+            hidePanel();
         }
     };
 
@@ -104,14 +116,12 @@ public class MainActivity extends Activity {
 
         float d = getResources().getDisplayMetrics().density;
 
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
+        root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
 
-        // --- Video area (fills everything above the bottom panel) ---
-        videoFrame = new FrameLayout(this);
+        // --- Full-screen video ---
         surface = new SurfaceView(this);
-        videoFrame.addView(surface, new FrameLayout.LayoutParams(-1, -1, Gravity.CENTER));
+        root.addView(surface, new FrameLayout.LayoutParams(-1, -1, Gravity.CENTER));
 
         status = new TextView(this);
         status.setTextColor(Color.WHITE);
@@ -120,31 +130,32 @@ public class MainActivity extends Activity {
         status.setPadding((int) (12 * d), (int) (6 * d), (int) (12 * d), (int) (6 * d));
         FrameLayout.LayoutParams sp = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.END);
         sp.setMargins(0, (int) (16 * d), (int) (16 * d), 0);
-        videoFrame.addView(status, sp);
+        root.addView(status, sp);
         status.setText("Loading channels…");
 
-        root.addView(videoFrame, new LinearLayout.LayoutParams(-1, 0, 1f));
-
-        // --- Bottom panel: now playing + channel list, always visible ---
+        // --- Transparent overlay at the bottom: now playing + channel list ---
         panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
-        panel.setBackgroundColor(0xFF101010);
+        // Fades from semi-dark at the bottom to fully transparent at the top.
+        panel.setBackground(new GradientDrawable(GradientDrawable.Orientation.BOTTOM_TOP,
+                new int[]{0xCC000000, 0x00000000}));
+        panel.setPadding(0, (int) (24 * d), 0, 0);
 
         nowPlaying = new TextView(this);
         nowPlaying.setTextColor(0xFF66CCFF);
         nowPlaying.setTextSize(20);
         nowPlaying.setSingleLine(true);
-        nowPlaying.setBackgroundColor(0xFF000000);
+        nowPlaying.setShadowLayer(4, 0, 0, Color.BLACK);
         nowPlaying.setPadding((int) (16 * d), (int) (8 * d), (int) (16 * d), (int) (8 * d));
         nowPlaying.setText("Hindi TV");
         panel.addView(nowPlaying, new LinearLayout.LayoutParams(-1, -2));
 
         list = new ListView(this);
-        list.setSelector(new ColorDrawable(0x883366FF));
+        list.setSelector(new ColorDrawable(0x663366FF));
         list.setDivider(null);
         panel.addView(list, new LinearLayout.LayoutParams(-1, (int) (150 * d)));
 
-        root.addView(panel, new LinearLayout.LayoutParams(-1, -2));
+        root.addView(panel, new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
         setContentView(root);
 
         adapter = new ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, names) {
@@ -154,6 +165,7 @@ public class MainActivity extends Activity {
                 boolean on = pos == current;
                 t.setTextSize(18);
                 t.setSingleLine(true);
+                t.setShadowLayer(4, 0, 0, Color.BLACK);
                 t.setTextColor(on ? 0xFF66CCFF : Color.WHITE);
                 t.setText((on ? "▶  " : "     ") + getItem(pos));
                 return t;
@@ -167,8 +179,7 @@ public class MainActivity extends Activity {
             }
         });
 
-        // Re-fit the video whenever the video area changes size (panel shown/hidden).
-        videoFrame.addOnLayoutChangeListener(new View.OnLayoutChangeListener() {
+        root.addOnLayoutChangeListener(new View.OnLayoutChangeListener() {
             @Override
             public void onLayoutChange(View v, int l, int t, int r, int bt,
                                        int ol, int ot, int or, int ob) {
@@ -178,6 +189,46 @@ public class MainActivity extends Activity {
 
         list.requestFocus();
         loadPlaylist();
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) {
+            // True full screen: hide system bars.
+            getWindow().getDecorView().setSystemUiVisibility(
+                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                            | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                            | View.SYSTEM_UI_FLAG_FULLSCREEN
+                            | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
+        }
+    }
+
+    // ---- Channel bar show / auto-hide ---------------------------------------
+
+    /** Show the bar. If hideLater is true it fades away after AUTO_HIDE_MS of no key presses. */
+    private void showPanel(boolean hideLater) {
+        ui.removeCallbacks(autoHide);
+        panelShown = true;
+        panel.animate().cancel();
+        panel.setVisibility(View.VISIBLE);
+        panel.animate().alpha(1f).setDuration(150).start();
+        if (!list.hasFocus()) list.requestFocus();
+        if (hideLater) ui.postDelayed(autoHide, AUTO_HIDE_MS);
+    }
+
+    private void hidePanel() {
+        ui.removeCallbacks(autoHide);
+        panelShown = false;
+        panel.animate().cancel();
+        panel.animate().alpha(0f).setDuration(300).withEndAction(new Runnable() {
+            @Override
+            public void run() {
+                if (!panelShown) panel.setVisibility(View.GONE);
+            }
+        }).start();
     }
 
     // ---- Player -----------------------------------------------------------
@@ -190,8 +241,8 @@ public class MainActivity extends Activity {
                 .setTargetBufferBytes(8 * 1024 * 1024)
                 .build();
         player = new ExoPlayer.Builder(this).setLoadControl(lc).build();
-        // Quality: pick the best variant up to 480p. If a stream only offers
-        // higher qualities, ExoPlayer falls back to the lowest one available.
+        // Quality: best variant up to 480p. If a stream only offers higher
+        // qualities, ExoPlayer falls back to the lowest one available.
         player.setTrackSelectionParameters(
                 player.getTrackSelectionParameters().buildUpon().setMaxVideoSize(MAX_W, MAX_H).build());
         player.setVideoSurfaceView(surface);
@@ -235,9 +286,9 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** Keep the video's aspect ratio inside the video area (SurfaceView would otherwise stretch). */
+    /** Fit the video to the full screen, keeping its aspect ratio (SurfaceView would otherwise stretch). */
     private void fitVideo(VideoSize vs) {
-        int W = videoFrame.getWidth(), H = videoFrame.getHeight();
+        int W = root.getWidth(), H = root.getHeight();
         if (vs.width == 0 || vs.height == 0 || W == 0 || H == 0) return;
         float ratio = vs.width * vs.pixelWidthHeightRatio / vs.height;
         int w = W, h = (int) (W / ratio);
@@ -254,6 +305,7 @@ public class MainActivity extends Activity {
         if (retries >= MAX_RETRIES) {
             status.setVisibility(View.VISIBLE);
             status.setText("Can't play this channel. Pick another.");
+            showPanel(false);   // keep the list up so a new channel can be picked
             return;
         }
         retries++;
@@ -384,7 +436,7 @@ public class MainActivity extends Activity {
         int last = getSharedPreferences(PREFS, MODE_PRIVATE).getInt(KEY_LAST, 0);
         if (last < 0 || last >= urls.size()) last = 0;
         play(last);
-        list.requestFocus();
+        showPanel(true);
     }
 
     // ---- Playback ---------------------------------------------------------
@@ -435,25 +487,54 @@ public class MainActivity extends Activity {
     // ---- Remote control ---------------------------------------------------
 
     @Override
-    public boolean onKeyDown(int key, KeyEvent e) {
-        switch (key) {
-            case KeyEvent.KEYCODE_CHANNEL_UP:
-            case KeyEvent.KEYCODE_PAGE_UP:
-                step(-1);
+    public boolean dispatchKeyEvent(KeyEvent e) {
+        if (e.getAction() != KeyEvent.ACTION_DOWN) return super.dispatchKeyEvent(e);
+        int key = e.getKeyCode();
+
+        if (key == KeyEvent.KEYCODE_BACK) {
+            if (panelShown && playing) {
+                hidePanel();
                 return true;
-            case KeyEvent.KEYCODE_CHANNEL_DOWN:
-            case KeyEvent.KEYCODE_PAGE_DOWN:
-                step(1);
-                return true;
-            case KeyEvent.KEYCODE_MENU:
-                // Optional full-screen toggle; the panel is visible by default.
-                panel.setVisibility(panel.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE);
-                list.requestFocus();
-                return true;
-            default:
-                // Up/Down/OK are handled by the focused list.
-                return super.onKeyDown(key, e);
+            }
+            return super.dispatchKeyEvent(e);   // bar already hidden: exit
         }
+
+        if (key == KeyEvent.KEYCODE_CHANNEL_UP || key == KeyEvent.KEYCODE_PAGE_UP) {
+            step(-1);
+            showPanel(true);
+            return true;
+        }
+        if (key == KeyEvent.KEYCODE_CHANNEL_DOWN || key == KeyEvent.KEYCODE_PAGE_DOWN) {
+            step(1);
+            showPanel(true);
+            return true;
+        }
+
+        if (key == KeyEvent.KEYCODE_MENU) {
+            if (panelShown) hidePanel(); else showPanel(true);
+            return true;
+        }
+
+        if (!panelShown) {
+            // First press only wakes the bar, so a stray key never changes the channel.
+            switch (key) {
+                case KeyEvent.KEYCODE_DPAD_UP:
+                case KeyEvent.KEYCODE_DPAD_DOWN:
+                case KeyEvent.KEYCODE_DPAD_CENTER:
+                case KeyEvent.KEYCODE_ENTER:
+                case KeyEvent.KEYCODE_DPAD_LEFT:
+                case KeyEvent.KEYCODE_DPAD_RIGHT:
+                    showPanel(true);
+                    return true;
+                default:
+                    break;
+            }
+        } else {
+            // Any key while the bar is up restarts the hide timer.
+            ui.removeCallbacks(autoHide);
+            ui.postDelayed(autoHide, AUTO_HIDE_MS);
+        }
+        return super.dispatchKeyEvent(e);
     }
 
     // ---- Lifecycle: free the decoder and buffers when not on screen --------
@@ -461,6 +542,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onStop() {
         super.onStop();
+        ui.removeCallbacks(autoHide);
         releasePlayer();
     }
 
@@ -468,5 +550,6 @@ public class MainActivity extends Activity {
     protected void onStart() {
         super.onStart();
         if (playing && current >= 0 && player == null) startStream(current);
+        if (playing) showPanel(true);
     }
 }
